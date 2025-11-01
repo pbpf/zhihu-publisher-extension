@@ -1,6 +1,9 @@
 import * as vscode from 'vscode';
 // @ts-ignore - puppeteer types可能未安装，直接静态导入
 import puppeteer, { Page, Browser } from 'puppeteer';
+// 全局持有当前浏览器实例，进入新的发布流程前关闭旧实例
+let activeBrowser: Browser | undefined;
+import { updateStatus } from '../status';
 // TextEncoder fallback：Node18+ 已内置；若不存在则使用 Buffer 转换替代
 const encodeUtf8 = (content: string): Uint8Array => {
   if (typeof TextEncoder !== 'undefined') {
@@ -30,6 +33,17 @@ function log(msg: string) {
 }
 
 export async function publishToZhihu(context: vscode.ExtensionContext) {
+  // 若已有浏览器实例，则尝试优雅关闭，避免冲突或多占资源
+  if (activeBrowser) {
+    try {
+      log('Closing previous Puppeteer browser instance before starting new publish flow');
+      await activeBrowser.close();
+    } catch (e: any) {
+      log('Previous browser close failed: ' + (e?.message || e));
+    } finally {
+      activeBrowser = undefined;
+    }
+  }
   const editor = vscode.window.activeTextEditor;
   if (!editor) {
     vscode.window.showWarningMessage('没有打开的 Markdown 编辑器');
@@ -42,7 +56,8 @@ export async function publishToZhihu(context: vscode.ExtensionContext) {
   const tempUri = vscode.Uri.file(context.globalStorageUri.fsPath + '/temp.md');
   await vscode.workspace.fs.writeFile(tempUri, encodeUtf8(raw));
 
-  vscode.window.showInformationMessage('后台启动浏览器准备发布知乎文章...');
+  // vscode.window.showInformationMessage('后台启动浏览器准备发布知乎文章...');
+  updateStatus('launching');
   const profileDir = context.globalStorageUri.fsPath + '/chrome-profile';
   log('Launching headless browser with persistent profile at: ' + profileDir + ' (删除该目录可重置登录状态)');
   const launchArgs = [
@@ -53,6 +68,7 @@ export async function publishToZhihu(context: vscode.ExtensionContext) {
   ];
   let isHeadless = true;
   let browser = await puppeteer.launch({ headless: isHeadless, userDataDir: profileDir, args: launchArgs });
+  activeBrowser = browser;
   let page = await browser.newPage();
   await applyUserAgent(page);
   await page.goto(ZHIHU.ENTRY, { waitUntil: ['domcontentloaded', 'load', 'networkidle0'] });
@@ -63,15 +79,18 @@ export async function publishToZhihu(context: vscode.ExtensionContext) {
     // 需要登录：切换到可视模式
     log('Not logged in (headless). Restarting visible browser for login.');
     try { await browser.close(); } catch { }
-    vscode.window.showInformationMessage('需要扫码登录，正在打开浏览器窗口...');
+  // vscode.window.showInformationMessage('需要扫码登录，正在打开浏览器窗口...');
+  updateStatus('loggingIn');
   isHeadless = false;
   browser = await puppeteer.launch({ headless: isHeadless, userDataDir: profileDir, args: launchArgs });
+  activeBrowser = browser;
     page = await browser.newPage();
     await applyUserAgent(page);
     await page.goto(ZHIHU.ENTRY, { waitUntil: ['domcontentloaded', 'load', 'networkidle0'] });
     loggedIn = await ensureLogin(page);
     if (!loggedIn) {
-      vscode.window.showErrorMessage('登录失败或超时，已清理缓存，下次将重新登录');
+  vscode.window.showErrorMessage('登录失败或超时，已清理缓存，下次将重新登录');
+  updateStatus('error');
       try { await browser.close(); } catch { }
       try {
         await vscode.workspace.fs.delete(vscode.Uri.file(profileDir), { recursive: true, useTrash: false });
@@ -87,6 +106,7 @@ export async function publishToZhihu(context: vscode.ExtensionContext) {
       try { await browser.close(); } catch {}
   isHeadless = true;
   browser = await puppeteer.launch({ headless: isHeadless, userDataDir: profileDir, args: launchArgs });
+  activeBrowser = browser;
       page = await browser.newPage();
       await applyUserAgent(page);
       await page.goto(ZHIHU.ENTRY, { waitUntil: ['domcontentloaded', 'load', 'networkidle0'] });
@@ -98,16 +118,19 @@ export async function publishToZhihu(context: vscode.ExtensionContext) {
     log('Detected existing logged-in session (headless)');
     // 额外检查风控（如风险验证）
     if (await detectRiskVerification(page)) {
-      log('Risk verification detected in headless mode; switching to visible');
+  log('Risk verification detected in headless mode; switching to visible');
+  updateStatus('risk');
       try { await browser.close(); } catch { }
   isHeadless = false;
   browser = await puppeteer.launch({ headless: isHeadless, userDataDir: profileDir, args: launchArgs });
+  activeBrowser = browser;
       page = await browser.newPage();
       await applyUserAgent(page);
       await page.goto(ZHIHU.ENTRY, { waitUntil: ['domcontentloaded', 'load', 'networkidle0'] });
       const ensured = await ensureLogin(page);
       if (!ensured) {
-        vscode.window.showErrorMessage('风控验证未通过');
+  vscode.window.showErrorMessage('风控验证未通过');
+  updateStatus('error');
         try { await browser.close(); } catch { }
         return;
       }
@@ -118,6 +141,7 @@ export async function publishToZhihu(context: vscode.ExtensionContext) {
         try { await browser.close(); } catch {}
   isHeadless = true;
   browser = await puppeteer.launch({ headless: isHeadless, userDataDir: profileDir, args: launchArgs });
+  activeBrowser = browser;
         page = await browser.newPage();
         await applyUserAgent(page);
         await page.goto(ZHIHU.ENTRY, { waitUntil: ['domcontentloaded', 'load', 'networkidle0'] });
@@ -131,33 +155,20 @@ export async function publishToZhihu(context: vscode.ExtensionContext) {
   try {
     await page.goto(ZHIHU.EDITOR, { waitUntil: ['domcontentloaded', 'load', 'networkidle0'] });
     log('Entered editor page');
-    await openImportModal(page);
+  updateStatus('importing');
+  await openImportModal(page);
     log('Import modal opened');
     await uploadMarkdownFile(page, tempUri.fsPath);
     log('File uploaded, filling title');
-    await fillTitle(page, title);
+  await fillTitle(page, title);
+  updateStatus('done');
     log('Import flow finished (current mode: ' + (isHeadless? 'visible' : 'headless?') + ')');
     const editorUrl = page.url();
     log('Url: '+editorUrl);
     showEditorLinkMessage(editorUrl, isHeadless)
-  // if (isHeadless) {
-  //     const action = await vscode.window.showInformationMessage('知乎文章已后台导入完成，是否打开浏览器查看与发布？', '打开浏览器', '保持后台');
-  //     if (action === '打开浏览器') {
-  //       log('User chose to open visible browser after headless import');
-  // isHeadless = false;
-  // const visibleBrowser = await puppeteer.launch({ headless: isHeadless, userDataDir: profileDir });
-  //       const visiblePage = await visibleBrowser.newPage();
-  //       await visiblePage.goto(ZHIHU.EDITOR, { waitUntil: ['domcontentloaded', 'load', 'networkidle0'] });
-  //       vscode.window.showInformationMessage('已打开浏览器窗口，可继续编辑或发布。');
-  //     } else {
-  //       vscode.window.showInformationMessage('导入完成（后台模式），未打开浏览器。');
-  //       try { await browser.close(); } catch { }
-  //     }
-  //   } else {
-  //     await showEditorLinkMessage(editorUrl, false);
-  //   }
   } catch (e: any) {
-    vscode.window.showErrorMessage('导入流程失败: ' + (e?.message || e));
+  vscode.window.showErrorMessage('导入流程失败: ' + (e?.message || e));
+  updateStatus('error');
     log('Error in import flow: ' + (e?.stack || e));
     try { await browser.close(); } catch { }
     return;
@@ -315,10 +326,10 @@ async function uploadMarkdownFile(page: Page, filePath: string) {
   // 使用 uploadFile (旧版 puppeteer) 或 setInputFiles (新版) 兼容
   if ((input as any).setInputFiles) {
     await (input as any).setInputFiles([filePath]);
-    log('Used setInputFiles API');
+    log('Used legacy setInputFiles API');
   } else {
     await (input as any).uploadFile(filePath);
-    log('Used legacy uploadFile API');
+    log('Used uploadFile API');
   }
   // 等待后台处理，或标题/内容区域出现变化
   await delay(page, 2000);
@@ -395,7 +406,8 @@ async function showEditorLinkMessage(url: string, headless: boolean) {
       await vscode.env.openExternal(vscode.Uri.parse(url));
       log('已在系统默认浏览器中打开知乎编辑页面');
     } catch (e: any) {
-      await vscode.env.clipboard.writeText(url); vscode.window.showInformationMessage('打开系统浏览器失败,已复制知乎编辑链接'); 
+      await vscode.env.clipboard.writeText(url); 
+      log('打开系统浏览器失败,已复制知乎编辑链接'); 
     }
   }
 }

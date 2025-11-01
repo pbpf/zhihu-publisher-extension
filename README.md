@@ -1,71 +1,71 @@
-# Zhihu Publisher
+# 修复知乎vscode(Markdown)文章发布
 
-仅保留知乎专栏发布功能的精简版 VS Code 扩展。
+重启：一个在 VS Code 中一键将当前 Markdown 发布到知乎文章的扩展，专注于最小必要功能与稳定性。
+## 和类似项目的区别（由于zhihu升级，类似项目大多已经无法使用）
+1. 0帧起手，没有任何配置项
+2. 内置浏览器核心，不依赖Chrome/Chromium
+3. 打包大小不到 5MB
+4. 只专注于知乎文章发布，没有多余功能
+5. 积极维护，修复各种登录与风控问题（类似项目大多已经荒废）
 
-## 功能
-- 获取当前活动 Markdown 文档内容
-- 启动 Puppeteer 浏览器自动登录知乎（支持扫码）
-- 打开写作页并通过模态框导入 Markdown 文件
-- 自动填写标题（移除文件扩展名）
+## 功能特性
+* 自动获取当前活动 Markdown 内容（无需保存到临时文件）
+* 持久化登录（使用 `globalStorage` 下的浏览器用户数据目录）免重复扫码，失败时自动清理目录重试
+* 浏览器 headless 优先：后台静默完成导入流程；需要扫码或风控验证时自动切换到可视模式
+* 风控验证增强：检测风险页、按钮高亮提示、轮询头像出现后继续流程
+* 模态框导入 Markdown，自动填写标题（移除扩展名与前后多余分隔）
+* 状态栏实时显示流程阶段（就绪/启动/登录/风控/导入/完成/失败），仅在 Markdown 编辑器活动时可见
+* 系统默认浏览器中打开知乎编辑页或复制文章链接到剪贴板（可选）
+* 单实例浏览器管理：发布前关闭旧的 Puppeteer 实例，避免资源泄漏
+* User-Agent 通过 CDP `Network.setUserAgentOverride` 设置，兼容新版 API
 
-## 快速开始（普通使用）
+## 快速开始
 1. 安装依赖：`npm install`
 2. 构建：`npm run compile`
-3. 在 VS Code 命令面板执行：`发布当前 Markdown 到知乎`
+3. 打开任意 Markdown (`.md/.markdown/...`) 文件（扩展通过 `activationEvents: onLanguage:markdown` 自动激活，状态栏出现 `Zhihu: 就绪`）
+4. 命令面板执行：`发布当前 Markdown 到知乎`
 
-### 扩展激活说明
-扩展设置了 `activationEvents: onCommand:zhihu.publishMarkdown`，只有在命令面板搜索该命令或被其它扩展调用时才会激活。如果安装后找不到命令：
-- 确认扩展已启用且未被禁用
-- 在命令面板输入关键字 “知乎” 或 “publishMarkdown”
-- 查看“开发者工具” Console 是否有加载错误（如 Puppeteer 缺失）
-- 使用 VS Code 菜单：帮助 -> 切换开发者工具，输入 `require("vscode").extensions.getExtension("your-name.zhihu-publisher-extension")?.isActive` 检查是否激活
+### 使用流程（概览）
+1. 检测并关闭旧浏览器实例（如果存在）
+2. 以 headless 模式启动 Puppeteer → 快速头像检测判断是否已登录
+3. 未登录则切换到可视模式重新 launch（扫码 / 微信登录 / 风控验证）
+4. 登录与验证通过后再重新 headless launch 进入专栏写作页
+5. 打开导入模态框 → 上传当前 Markdown → 自动填标题 → 等待页面完成渲染
+6. 提示是否打开系统浏览器/复制链接 → 完成并保持状态栏 `完成`
 
-## 调试开发
-本仓库已包含 `.vscode/launch.json` 与 `tasks.json`：
+## 浏览器模式切换策略
+由于运行时无法直接从有头切换为 headless，流程采用“按需重启”：
+* 初次尝试 headless（速度快） → 需要交互则关闭并重启为可视
+* 登录/风控完成后关闭可视浏览器 → 再次以 headless 启动执行导入与填写标题
+* 每次 `launch` 都会更新全局 `activeBrowser`，命令结束或开始下次命令前统一关闭旧实例
 
-### F5 调试流程
-1. 运行面板选择 `Run Extension` 或直接按 F5。
-2. 会启动一个 Extension Development Host 窗口。
-3. 在该新窗口中打开 Markdown 文件并执行命令。
-4. 在 `src/` 中直接设置断点，因开启 `sourceMap` 可映射到 TS 源。
+## 登录与风控细节
+* 快速登录检测：访问主页并查找头像元素/相关选择器
+* 扫码：如果出现二维码区域，等待用户操作直到检测到头像
+* 风控验证：
+	- 识别页面中文案（如“风险”相关关键词）
+	- 高亮验证按钮（通过注入样式）
+	- 定时刷新或轮询是否通过（检测用户信息元素出现）
+	- 超时后给出交互提示，可选择重试/放弃
 
-### 增量编译
-`launch.json` 中使用 `preLaunchTask: tsc: watch`，调试开始后自动进入 TypeScript watch 模式，保存文件即自动重新编译到 `dist/`。
+## 状态栏状态说明
+| 状态 | 文案 | 说明 |
+|------|------|------|
+| idle | Zhihu: 就绪 | 扩展已激活且 Markdown 文件处于活动 |
+| launching | 启动浏览器… | 正在创建 Puppeteer 实例 |
+| loggingIn | 登录中… | 等待扫码或登录完成 |
+| risk | 风控验证… | 用户需在浏览器中手动完成验证 |
+| importing | 导入中… | 正在上传并填写标题 |
+| done | 导入完成 | 成功，可能显示链接操作提示 |
+| error | 失败 | 发生异常，可再次点击重试 |
 
-### Puppeteer 浏览器
-- 默认 `headless: false` 方便扫码与视觉确认。
-- 若需要指定已有 Chrome/Chromium，可设置环境变量：`PUPPETEER_EXECUTABLE_PATH=/path/to/chrome` 后再 F5。
-
-### 常见问题排查
-| 场景 | 解决思路 |
-| ---- | -------- |
-| 浏览器无法启动 | 检查 Linux 依赖 (如 libatk-bridge2.0-0, libgbm1)。尝试安装或改用系统 Chrome。 |
-| 登录一直等待 | 看是否跳转到二维码页面，超时后重试；确保网络可访问微信登录。 |
-| 断点不命中 | 确认 watch 正在运行；查看 `dist/*.js.map` 是否生成。重新启动调试实例可恢复。 |
-| 上传失败提示未找到 input | 可能知乎前端结构更新，更新选择器逻辑 `publisher.ts`。 |
-| 命令显示但执行报 not found | 扩展激活失败，检查开发者工具 Console 是否有依赖缺失错误。 |
-| 加载 puppeteer 失败缺 cosmiconfig | `.vscodeignore` 过度排除，保留完整 `node_modules` 或仅移除 docs/test。 |
-
-### 打包注意事项
-Puppeteer 依赖链包含 `puppeteer-core`, `@puppeteer/browsers`, `chromium-bidi`, `cosmiconfig` 等。如果在 `.vscodeignore` 中排除整个 `node_modules` 再做选择性白名单，很容易漏掉深层依赖导致运行期报错。推荐初期做法：
-
-1. 保留完整 `node_modules` 仅排除 `**/test`, `**/docs` 等。
-2. 确认命令执行正常后再考虑：
-	- 改用 `puppeteer-core` + 系统浏览器：减少 VSIX 体积。
-	- 使用打包工具（esbuild/webpack）内联业务代码并 external `puppeteer`。
-3. 遇到 `Cannot find package 'cosmiconfig'` 等错误：撤销对 `node_modules` 的大范围排除，重新打包验证。
-
-懒加载策略：扩展激活时不加载 puppeteer，命令执行时动态 `import('puppeteer')`，降低激活失败风险。
-
-## 注意
-- Puppeteer 默认非 headless，方便扫码与观察流程
-- 导入失败时请检查知乎页面结构是否变更
-- 目前仅支持 docx/md 的模态框导入路径
-
-## 后续增强建议
-- 增加重试与超时策略
-- 内容完整性验证与提示
-- 支持图片自动上传
+## 后续增强想法
+* 可配置始终显示状态栏（即使非 Markdown）
+* 命令：手动关闭浏览器实例 / 清理登录缓存目录
+* 发布进度通知（弹窗或 OutputChannel 日志）
+* 自动截图或保存导入前后 HTML 片段用于排错
+* 图片与资源上传支持
 
 ## 许可
 MIT
+

@@ -47,7 +47,8 @@
     "build": "npm run compile",
     "bundle": "node build/esbuild-bundle.mjs",
     "package": "npm run bundle && vsce package",
-    "debug": "code --extensionDevelopmentPath=${PWD} ."
+    "debug": "code --extensionDevelopmentPath=${PWD} .",
+    "publish": "vsce publish -p ${env:VSCE_PAT}"
   },
   "contributes": {
     "commands": [

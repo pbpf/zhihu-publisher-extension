@@ -49,3 +49,4 @@ coverage/
 # Global storage / extension runtime temp
 **/globalStorage/*
 package-lock.json
+.vscode

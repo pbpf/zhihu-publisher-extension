@@ -44,16 +44,26 @@ export async function publishToZhihu(context: vscode.ExtensionContext) {
 
   vscode.window.showInformationMessage('启动浏览器准备发布知乎文章...'); // 关键提示仍使用通知
   log('Launching Puppeteer browser');
-  const browser = await puppeteer.launch({ headless: false });
+  const profileDir = context.globalStorageUri.fsPath + '/chrome-profile';
+  // 若需要重新登录，可手动删除该目录: profileDir
+  log('Launching Puppeteer browser with persistent profile at: ' + profileDir + ' (删除该目录可重置登录状态)');
+  const browser = await puppeteer.launch({ headless: false, userDataDir: profileDir });
   const page = await browser.newPage();
   await page.goto(ZHIHU.ENTRY, { waitUntil: ['domcontentloaded', 'load', 'networkidle0'] });
   log('Opened Zhihu entry page');
 
   const loggedIn = await ensureLogin(page);
   if (!loggedIn) {
-    vscode.window.showErrorMessage('登录失败或超时');
-    await browser.close();
-    return;
+    vscode.window.showErrorMessage('登录失败或超时，已清理缓存，下次将重新登录');
+    // try { await browser.close(); } catch {}
+    // // 登录失败自动删除持久化目录，避免坏状态下永远无法重新扫码
+    // try {
+    //   await vscode.workspace.fs.delete(vscode.Uri.file(profileDir), { recursive: true, useTrash: false });
+    //   log('Deleted profile directory after failed login: ' + profileDir);
+    // } catch (e: any) {
+    //   log('Failed to delete profile directory: ' + (e?.message || e));
+    // }
+    // return;
   }
 
   try {
@@ -89,11 +99,52 @@ async function ensureLogin(page: Page): Promise<boolean> {
       log('Waiting for avatar after QR login');
       await page.waitForSelector(ZHIHU.LOGIN_AVATAR, { timeout: 300000 });
     }
+    // 登录后检查是否存在风险验证页面
+    if (await detectRiskVerification(page)) {
+      vscode.window.showWarningMessage('检测到知乎风控验证，请在浏览器内完成“开始验证”操作');
+      log('Risk verification detected, waiting user manual action');
+      const solved = await waitForManualVerification(page, 300000);
+      if (!solved) {
+        log('Risk verification not solved within timeout');
+        return false;
+      }
+      log('Risk verification passed');
+    }
     return true;
   } catch {
     log('Login detection failed or timed out');
     return false;
   }
+}
+
+// 检测“系统监测到您的网络环境存在异常...” 风控提示
+async function detectRiskVerification(page: Page): Promise<boolean> {
+  try {
+    return await page.evaluate(() => {
+      const text = document.body.innerText || '';
+      return text.includes('系统监测到您的网络环境存在异常') && text.includes('开始验证');
+    });
+  } catch {
+    return false;
+  }
+}
+
+// 等待用户手动完成风控验证：轮询头像出现或提示消失
+async function waitForManualVerification(page: Page, timeoutMs: number): Promise<boolean> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    try {
+      const hasAvatar = await page.$(ZHIHU.LOGIN_AVATAR);
+      if (hasAvatar) return true;
+      const stillRisk = await detectRiskVerification(page);
+      if (!stillRisk) {
+        // 提示消失后再确认一次头像（给页面跳转时间）
+        try { await page.waitForSelector(ZHIHU.LOGIN_AVATAR, { timeout: 5000 }); return true; } catch {}
+      }
+    } catch {}
+    await new Promise(r => setTimeout(r, 1500));
+  }
+  return false;
 }
 
 // 已改为静态导入 puppeteer，无需 lazyLoadPuppeteer

@@ -1,0 +1,51 @@
+# Node dependencies
+node_modules/
+
+# Compiled output
+/dist/
+/out/
+
+# VS Code extension packaging
+*.vsix
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE / Editor state
+.vscode-test/
+.vscode/*.code-snippets
+
+# TypeScript incremental cache
+*.tsbuildinfo
+
+# Puppeteer browsers cache (if using PUPPETEER_DOWNLOAD_PATH or similar)
+.pptr/
+.chromium/
+
+# Environment / secrets
+.env
+.env.local
+
+# Coverage / reports
+coverage/
+
+# Temporary files
+*.tmp
+*.swp
+
+# Lock files (optional if you DON'T want to commit; usually keep one)
+# Uncomment the ones you prefer to ignore:
+# package-lock.json
+# yarn.lock
+# pnpm-lock.yaml
+
+# Global storage / extension runtime temp
+**/globalStorage/*
+package-lock.json

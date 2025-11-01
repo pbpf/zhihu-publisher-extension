@@ -102,26 +102,57 @@ async function openImportModal(page: Page) {
 }
 
 async function uploadMarkdownFile(page: Page, filePath: string) {
-  // 激活占位区域以便出现 input
-  const placeholder = await page.$('.Modal-inner .react-aria-TabPanel .css-94ghot, .Modal-inner .react-aria-TabPanel .css-1j2l6c2');
-  if (placeholder) await placeholder.click();
-  await delay(page, 300);
-  let input = await page.$('.Modal-inner .react-aria-TabPanel input[type=file][accept*=".md"], .Modal-inner .react-aria-TabPanel input[type=file]');
-  if (!input) {
-  if (placeholder) { await placeholder.click(); await delay(page, 300); }
-    input = await page.$('.Modal-inner .react-aria-TabPanel input[type=file][accept*=".md"], .Modal-inner .react-aria-TabPanel input[type=file]');
-  }
+  // 直接定位 file input，避免点击 placeholder 触发系统文件选择对话框
+  const input = await page.$('.Modal-inner .react-aria-TabPanel input[type=file][accept*=".md"], .Modal-inner .react-aria-TabPanel input[type=file]');
   if (!input) throw new Error('未找到文件上传 input');
+  // 确保可见性（某些内联 style: display:none）
   await page.evaluate((el: HTMLElement) => el.removeAttribute('style'), input as any);
-  await input.uploadFile(filePath);
-  // 等待后台处理完成或编辑区出现内容
-  await delay(page, 2500);
+  // 使用 uploadFile (旧版 puppeteer) 或 setInputFiles (新版) 兼容
+  if ((input as any).setInputFiles) {
+    await (input as any).setInputFiles([filePath]);
+  } else {
+    await (input as any).uploadFile(filePath);
+  }
+  // 等待后台处理，或标题/内容区域出现变化
+  await delay(page, 2000);
+  await finalizeImport(page);
 }
 
 async function fillTitle(page: Page, title: string) {
   const input = await page.$(ZHIHU.TITLE_INPUT);
   if (!input) throw new Error('未找到标题输入框');
   await input.type(title);
+}
+
+// 检测内容导入完成并尝试关闭模态框（若知乎编辑器允许）
+async function finalizeImport(page: Page) {
+  try {
+    // 条件 1：编辑区出现内容节点或富文本容器有子元素
+    await page.waitForFunction((selector) => {
+      const el = document.querySelector(selector);
+      return !!el && el.childElementCount > 0;
+    }, { timeout: 8000 }, ZHIHU.CONTENT_SELECTOR);
+  } catch {
+    // 内容检测失败继续尝试关闭
+  }
+  // 查找关闭按钮（可能是模态右上角或“完成”按钮文字）
+  const closeBtn = await page.$('.Modal-inner button[aria-label="关闭"], .Modal-closeButton, button[aria-label=关闭]');
+  if (closeBtn) {
+    await closeBtn.click();
+    await delay(page, 300);
+    return;
+  }
+  // 尝试点击“完成”或“确认”文本按钮
+  await clickByText(page, '完成');
+  await delay(page, 300);
+  await clickByText(page, '确认');
+  await delay(page, 300);
+  // 若仍存在模态，可发送 ESC
+  const modalStill = await page.$('.Modal-inner');
+  if (modalStill) {
+    await page.keyboard.press('Escape');
+    await delay(page, 300);
+  }
 }
 
 async function clickByText(page: Page, text: string) {

@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 // @ts-ignore - puppeteer types可能未安装，直接静态导入
-import puppeteer, { Page } from 'puppeteer';
+import puppeteer, { Page, Browser } from 'puppeteer';
 // TextEncoder fallback：Node18+ 已内置；若不存在则使用 Buffer 转换替代
 const encodeUtf8 = (content: string): Uint8Array => {
   if (typeof TextEncoder !== 'undefined') {
@@ -25,7 +25,7 @@ const ZHIHU = {
 let channel: vscode.OutputChannel | undefined;
 function log(msg: string) {
   if (!channel) channel = vscode.window.createOutputChannel('Zhihu Publisher');
-  const time = new Date().toISOString().substring(11,19); // HH:MM:SS
+  const time = new Date().toISOString().substring(11, 19); // HH:MM:SS
   channel.appendLine(`[${time}] ${msg}`);
 }
 
@@ -42,28 +42,90 @@ export async function publishToZhihu(context: vscode.ExtensionContext) {
   const tempUri = vscode.Uri.file(context.globalStorageUri.fsPath + '/temp.md');
   await vscode.workspace.fs.writeFile(tempUri, encodeUtf8(raw));
 
-  vscode.window.showInformationMessage('启动浏览器准备发布知乎文章...'); // 关键提示仍使用通知
-  log('Launching Puppeteer browser');
+  vscode.window.showInformationMessage('后台启动浏览器准备发布知乎文章...');
   const profileDir = context.globalStorageUri.fsPath + '/chrome-profile';
-  // 若需要重新登录，可手动删除该目录: profileDir
-  log('Launching Puppeteer browser with persistent profile at: ' + profileDir + ' (删除该目录可重置登录状态)');
-  const browser = await puppeteer.launch({ headless: false, userDataDir: profileDir });
-  const page = await browser.newPage();
+  log('Launching headless browser with persistent profile at: ' + profileDir + ' (删除该目录可重置登录状态)');
+  const launchArgs = [
+    '--disable-blink-features=AutomationControlled',
+    '--no-sandbox',
+    '--disable-setuid-sandbox',
+    '--disable-dev-shm-usage'
+  ];
+  let isHeadless = true;
+  let browser = await puppeteer.launch({ headless: isHeadless, userDataDir: profileDir, args: launchArgs });
+  let page = await browser.newPage();
+  await applyUserAgent(page);
   await page.goto(ZHIHU.ENTRY, { waitUntil: ['domcontentloaded', 'load', 'networkidle0'] });
-  log('Opened Zhihu entry page');
+  log('Opened Zhihu entry page (headless)');
 
-  const loggedIn = await ensureLogin(page);
+  let loggedIn = await checkLoggedInQuick(page);
   if (!loggedIn) {
-    vscode.window.showErrorMessage('登录失败或超时，已清理缓存，下次将重新登录');
-    // try { await browser.close(); } catch {}
-    // // 登录失败自动删除持久化目录，避免坏状态下永远无法重新扫码
-    // try {
-    //   await vscode.workspace.fs.delete(vscode.Uri.file(profileDir), { recursive: true, useTrash: false });
-    //   log('Deleted profile directory after failed login: ' + profileDir);
-    // } catch (e: any) {
-    //   log('Failed to delete profile directory: ' + (e?.message || e));
-    // }
-    // return;
+    // 需要登录：切换到可视模式
+    log('Not logged in (headless). Restarting visible browser for login.');
+    try { await browser.close(); } catch { }
+    vscode.window.showInformationMessage('需要扫码登录，正在打开浏览器窗口...');
+  isHeadless = false;
+  browser = await puppeteer.launch({ headless: isHeadless, userDataDir: profileDir, args: launchArgs });
+    page = await browser.newPage();
+    await applyUserAgent(page);
+    await page.goto(ZHIHU.ENTRY, { waitUntil: ['domcontentloaded', 'load', 'networkidle0'] });
+    loggedIn = await ensureLogin(page);
+    if (!loggedIn) {
+      vscode.window.showErrorMessage('登录失败或超时，已清理缓存，下次将重新登录');
+      try { await browser.close(); } catch { }
+      try {
+        await vscode.workspace.fs.delete(vscode.Uri.file(profileDir), { recursive: true, useTrash: false });
+        log('Deleted profile directory after failed login: ' + profileDir);
+      } catch (e: any) {
+        log('Failed to delete profile directory: ' + (e?.message || e));
+      }
+      return;
+    }
+    // 登录成功后切回 headless 减少打扰
+    try {
+      log('Login succeeded in visible mode, switching back to headless for import flow');
+      try { await browser.close(); } catch {}
+  isHeadless = true;
+  browser = await puppeteer.launch({ headless: isHeadless, userDataDir: profileDir, args: launchArgs });
+      page = await browser.newPage();
+      await applyUserAgent(page);
+      await page.goto(ZHIHU.ENTRY, { waitUntil: ['domcontentloaded', 'load', 'networkidle0'] });
+      log('Headless session restored after login');
+    } catch (e: any) {
+      log('Failed to switch back to headless: ' + (e?.message || e));
+    }
+  } else {
+    log('Detected existing logged-in session (headless)');
+    // 额外检查风控（如风险验证）
+    if (await detectRiskVerification(page)) {
+      log('Risk verification detected in headless mode; switching to visible');
+      try { await browser.close(); } catch { }
+  isHeadless = false;
+  browser = await puppeteer.launch({ headless: isHeadless, userDataDir: profileDir, args: launchArgs });
+      page = await browser.newPage();
+      await applyUserAgent(page);
+      await page.goto(ZHIHU.ENTRY, { waitUntil: ['domcontentloaded', 'load', 'networkidle0'] });
+      const ensured = await ensureLogin(page);
+      if (!ensured) {
+        vscode.window.showErrorMessage('风控验证未通过');
+        try { await browser.close(); } catch { }
+        return;
+      }
+      loggedIn = true;
+      // 风控验证通过后同样切回 headless
+      try {
+        log('Risk verification passed in visible mode, switching back to headless');
+        try { await browser.close(); } catch {}
+  isHeadless = true;
+  browser = await puppeteer.launch({ headless: isHeadless, userDataDir: profileDir, args: launchArgs });
+        page = await browser.newPage();
+        await applyUserAgent(page);
+        await page.goto(ZHIHU.ENTRY, { waitUntil: ['domcontentloaded', 'load', 'networkidle0'] });
+        log('Headless session restored after risk verification');
+      } catch (e: any) {
+        log('Failed to revert to headless after risk verification: ' + (e?.message || e));
+      }
+    }
   }
 
   try {
@@ -74,14 +136,40 @@ export async function publishToZhihu(context: vscode.ExtensionContext) {
     await uploadMarkdownFile(page, tempUri.fsPath);
     log('File uploaded, filling title');
     await fillTitle(page, title);
-    vscode.window.showInformationMessage('知乎文章内容已导入，确认后可手动发布。');
-    log('Import flow finished');
+    log('Import flow finished (current mode: ' + (isHeadless? 'visible' : 'headless?') + ')');
+    const editorUrl = page.url();
+    log('Url: '+editorUrl);
+    showEditorLinkMessage(editorUrl, isHeadless)
+  // if (isHeadless) {
+  //     const action = await vscode.window.showInformationMessage('知乎文章已后台导入完成，是否打开浏览器查看与发布？', '打开浏览器', '保持后台');
+  //     if (action === '打开浏览器') {
+  //       log('User chose to open visible browser after headless import');
+  // isHeadless = false;
+  // const visibleBrowser = await puppeteer.launch({ headless: isHeadless, userDataDir: profileDir });
+  //       const visiblePage = await visibleBrowser.newPage();
+  //       await visiblePage.goto(ZHIHU.EDITOR, { waitUntil: ['domcontentloaded', 'load', 'networkidle0'] });
+  //       vscode.window.showInformationMessage('已打开浏览器窗口，可继续编辑或发布。');
+  //     } else {
+  //       vscode.window.showInformationMessage('导入完成（后台模式），未打开浏览器。');
+  //       try { await browser.close(); } catch { }
+  //     }
+  //   } else {
+  //     await showEditorLinkMessage(editorUrl, false);
+  //   }
   } catch (e: any) {
     vscode.window.showErrorMessage('导入流程失败: ' + (e?.message || e));
     log('Error in import flow: ' + (e?.stack || e));
-    try { await browser.close(); } catch {}
+    try { await browser.close(); } catch { }
     return;
   }
+}
+
+// 快速检测是否已登录（不触发扫码）：寻找头像元素
+async function checkLoggedInQuick(page: Page): Promise<boolean> {
+  try {
+    await page.waitForSelector(ZHIHU.LOGIN_AVATAR, { timeout: 4000 });
+    return true;
+  } catch { return false; }
 }
 
 async function ensureLogin(page: Page): Promise<boolean> {
@@ -101,14 +189,9 @@ async function ensureLogin(page: Page): Promise<boolean> {
     }
     // 登录后检查是否存在风险验证页面
     if (await detectRiskVerification(page)) {
-      vscode.window.showWarningMessage('检测到知乎风控验证，请在浏览器内完成“开始验证”操作');
-      log('Risk verification detected, waiting user manual action');
-      const solved = await waitForManualVerification(page, 300000);
-      if (!solved) {
-        log('Risk verification not solved within timeout');
-        return false;
-      }
-      log('Risk verification passed');
+      log('Risk verification page detected after login. Escalating handling.');
+      const handled = await handleRiskVerification(page);
+      if (!handled) return false;
     }
     return true;
   } catch {
@@ -129,6 +212,58 @@ async function detectRiskVerification(page: Page): Promise<boolean> {
   }
 }
 
+// 处理风控验证加载失败或按钮不可见的情况
+async function handleRiskVerification(page: Page): Promise<boolean> {
+  try {
+    // 若当前是 headless，调用方需已切换为可视浏览器；这里再做一次兜底提醒
+    vscode.window.showWarningMessage('检测到知乎风控验证，如果“开始验证”按钮未出现，将尝试自动刷新');
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      log(`Risk verification handling attempt ${attempt}`);
+      const buttonFound = await findAndHighlightVerifyButton(page);
+      if (buttonFound) {
+        vscode.window.showInformationMessage('请点击浏览器中的“开始验证”并完成验证');
+        const solved = await waitForManualVerification(page, 180000);
+        if (solved) {
+          log('Risk verification solved within attempts');
+          return true;
+        } else {
+          log('Waiting for manual verification timed out in this attempt');
+        }
+      } else {
+        log('Verify button not found, reloading risk page');
+      }
+      try { await page.reload({ waitUntil: ['domcontentloaded', 'load'] }); } catch { }
+      await new Promise(r => setTimeout(r, 1500));
+      if (!(await detectRiskVerification(page))) {
+        // 可能已经跳转走了，检查头像
+        const avatar = await page.$(ZHIHU.LOGIN_AVATAR);
+        if (avatar) return true;
+      }
+    }
+    vscode.window.showErrorMessage('风控验证未成功加载或未在限定时间内完成');
+    return false;
+  } catch (e: any) {
+    log('handleRiskVerification error: ' + (e?.message || e));
+    return false;
+  }
+}
+
+async function findAndHighlightVerifyButton(page: Page): Promise<boolean> {
+  try {
+    const found = await page.evaluate(() => {
+      const candidates = Array.from(document.querySelectorAll('button, a, div')) as HTMLElement[];
+      const target = candidates.find(el => /开始验证|验证/.test(el.innerText || ''));
+      if (target) {
+        target.style.outline = '2px solid #ff4d4f';
+        target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        return true;
+      }
+      return false;
+    });
+    return !!found;
+  } catch { return false; }
+}
+
 // 等待用户手动完成风控验证：轮询头像出现或提示消失
 async function waitForManualVerification(page: Page, timeoutMs: number): Promise<boolean> {
   const start = Date.now();
@@ -139,9 +274,9 @@ async function waitForManualVerification(page: Page, timeoutMs: number): Promise
       const stillRisk = await detectRiskVerification(page);
       if (!stillRisk) {
         // 提示消失后再确认一次头像（给页面跳转时间）
-        try { await page.waitForSelector(ZHIHU.LOGIN_AVATAR, { timeout: 5000 }); return true; } catch {}
+        try { await page.waitForSelector(ZHIHU.LOGIN_AVATAR, { timeout: 5000 }); return true; } catch { }
       }
-    } catch {}
+    } catch { }
     await new Promise(r => setTimeout(r, 1500));
   }
   return false;
@@ -247,4 +382,42 @@ function delay(page: Page, ms: number) {
   return page.waitForFunction((timeout) => {
     return new Promise(resolve => setTimeout(resolve, timeout)).then(() => true);
   }, {}, ms);
+}
+
+// 展示可点击编辑页链接的消息
+async function showEditorLinkMessage(url: string, headless: boolean) {
+  const actions: string[] = [];
+  actions.push('打开浏览器');
+  const selection = await vscode.window.showInformationMessage('知乎文章内容已导入：' + url, ...actions);
+  if (selection === '打开浏览器') {
+    // 使用系统默认浏览器直接打开编辑页
+    try {
+      await vscode.env.openExternal(vscode.Uri.parse(url));
+      log('已在系统默认浏览器中打开知乎编辑页面');
+    } catch (e: any) {
+      await vscode.env.clipboard.writeText(url); vscode.window.showInformationMessage('打开系统浏览器失败,已复制知乎编辑链接'); 
+    }
+  }
+}
+
+// 统一设置 User-Agent（兼容未来 setUserAgent 弃用）
+async function applyUserAgent(page: Page) {
+  const ua = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36';
+  try {
+    // 优先使用 CDP 覆盖 UA
+    const client = await (page as any).createCDPSession?.();
+    if (client) {
+      await client.send('Network.setUserAgentOverride', { userAgent: ua });
+      return;
+    }
+  } catch (e: any) {
+    log('CDP UA override failed: ' + (e?.message || e));
+  }
+  try {
+    // 回退旧 API（若仍可用）
+    // @ts-ignore
+    if (page.setUserAgent) await (page as any).setUserAgent(ua);
+  } catch (e: any) {
+    log('Fallback setUserAgent failed: ' + (e?.message || e));
+  }
 }

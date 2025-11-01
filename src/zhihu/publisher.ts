@@ -1,6 +1,8 @@
 import * as vscode from 'vscode';
 // @ts-ignore - puppeteer types may not be installed; treat as any if missing
-import puppeteer, { Page } from 'puppeteer';
+// 延迟加载 puppeteer，避免扩展激活阶段因为缺少依赖或体积过大导致命令注册失败
+// 类型用 any 降低耦合；执行时动态 import
+import type { Page } from 'puppeteer';
 // TextEncoder fallback：Node18+ 已内置；若不存在则使用 Buffer 转换替代
 const encodeUtf8 = (content: string): Uint8Array => {
   if (typeof TextEncoder !== 'undefined') {
@@ -21,6 +23,14 @@ const ZHIHU = {
   CONTENT_SELECTOR: '.Dropzone.Editable-content.RichText'
 };
 
+// 单例输出通道，用于显示调试/进度信息（非用户关键提示）
+let channel: vscode.OutputChannel | undefined;
+function log(msg: string) {
+  if (!channel) channel = vscode.window.createOutputChannel('Zhihu Publisher');
+  const time = new Date().toISOString().substring(11,19); // HH:MM:SS
+  channel.appendLine(`[${time}] ${msg}`);
+}
+
 export async function publishToZhihu(context: vscode.ExtensionContext) {
   const editor = vscode.window.activeTextEditor;
   if (!editor) {
@@ -34,10 +44,13 @@ export async function publishToZhihu(context: vscode.ExtensionContext) {
   const tempUri = vscode.Uri.file(context.globalStorageUri.fsPath + '/temp.md');
   await vscode.workspace.fs.writeFile(tempUri, encodeUtf8(raw));
 
-  vscode.window.showInformationMessage('启动浏览器准备发布知乎文章...');
+  vscode.window.showInformationMessage('启动浏览器准备发布知乎文章...'); // 关键提示仍使用通知
+  log('Launching Puppeteer browser');
+  const puppeteer = await lazyLoadPuppeteer();
   const browser = await puppeteer.launch({ headless: false });
   const page = await browser.newPage();
   await page.goto(ZHIHU.ENTRY, { waitUntil: ['domcontentloaded', 'load', 'networkidle0'] });
+  log('Opened Zhihu entry page');
 
   const loggedIn = await ensureLogin(page);
   if (!loggedIn) {
@@ -48,15 +61,17 @@ export async function publishToZhihu(context: vscode.ExtensionContext) {
 
   try {
     await page.goto(ZHIHU.EDITOR, { waitUntil: ['domcontentloaded', 'load', 'networkidle0'] });
-    vscode.window.showInformationMessage('进入写作页面，准备导入 Markdown');
+    log('Entered editor page');
     await openImportModal(page);
-    vscode.window.showInformationMessage('导入模态已打开，开始上传文件');
+    log('Import modal opened');
     await uploadMarkdownFile(page, tempUri.fsPath);
-    vscode.window.showInformationMessage('文件上传完成，填写标题中…');
+    log('File uploaded, filling title');
     await fillTitle(page, title);
     vscode.window.showInformationMessage('知乎文章内容已导入，确认后可手动发布。');
+    log('Import flow finished');
   } catch (e: any) {
     vscode.window.showErrorMessage('导入流程失败: ' + (e?.message || e));
+    log('Error in import flow: ' + (e?.stack || e));
     try { await browser.close(); } catch {}
     return;
   }
@@ -73,17 +88,37 @@ async function ensureLogin(page: Page): Promise<boolean> {
     if (className.includes('Button')) {
       await page.goto(ZHIHU.QR_LOGIN_URL, { waitUntil: ['domcontentloaded', 'load', 'networkidle0'] });
       // 显示二维码提示
-      vscode.window.showInformationMessage('请在弹出页面使用微信扫码完成登录');
+      vscode.window.showInformationMessage('请在弹出页面使用微信扫码完成登录'); // 登录提示保留通知
+      log('Waiting for avatar after QR login');
       await page.waitForSelector(ZHIHU.LOGIN_AVATAR, { timeout: 300000 });
     }
     return true;
   } catch {
+    log('Login detection failed or timed out');
     return false;
+  }
+}
+
+async function lazyLoadPuppeteer() {
+  try {
+    // 优先尝试正常依赖
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const mod = await import('puppeteer');
+    return (mod as any).default || mod;
+  } catch (e) {
+    const msg = '加载 puppeteer 失败: ' + (e as any)?.message + '。可能原因：\n' +
+      '- .vscodeignore 过滤了 puppeteer 依赖（如 cosmiconfig）\n' +
+      '- 未执行 npm install 或安装不完整\n' +
+      '- VSIX 打包后缺少依赖，需保留完整 node_modules 或使用打包工具内联\n' +
+      '解决：暂时保留全部 node_modules，确认命令可用后再做瘦身。';
+    vscode.window.showErrorMessage(msg);
+    throw e;
   }
 }
 
 async function openImportModal(page: Page) {
   // 新 UI：点击 “导入” -> “导入文档”
+  log('Trying to open import modal');
   const importBtn = await page.$('button[aria-label="导入"], .Button[aria-label=导入]');
   if (importBtn) {
     await importBtn.click();
@@ -99,10 +134,12 @@ async function openImportModal(page: Page) {
   }
   await delay(page, 800);
   await page.waitForSelector('.Modal-inner .react-aria-TabPanel', { timeout: 15000 });
+  log('Import modal content panel detected');
 }
 
 async function uploadMarkdownFile(page: Page, filePath: string) {
   // 直接定位 file input，避免点击 placeholder 触发系统文件选择对话框
+  log('Locating file input for upload');
   const input = await page.$('.Modal-inner .react-aria-TabPanel input[type=file][accept*=".md"], .Modal-inner .react-aria-TabPanel input[type=file]');
   if (!input) throw new Error('未找到文件上传 input');
   // 确保可见性（某些内联 style: display:none）
@@ -110,8 +147,10 @@ async function uploadMarkdownFile(page: Page, filePath: string) {
   // 使用 uploadFile (旧版 puppeteer) 或 setInputFiles (新版) 兼容
   if ((input as any).setInputFiles) {
     await (input as any).setInputFiles([filePath]);
+    log('Used setInputFiles API');
   } else {
     await (input as any).uploadFile(filePath);
+    log('Used legacy uploadFile API');
   }
   // 等待后台处理，或标题/内容区域出现变化
   await delay(page, 2000);
@@ -122,6 +161,7 @@ async function fillTitle(page: Page, title: string) {
   const input = await page.$(ZHIHU.TITLE_INPUT);
   if (!input) throw new Error('未找到标题输入框');
   await input.type(title);
+  log('Title filled: ' + title);
 }
 
 // 检测内容导入完成并尝试关闭模态框（若知乎编辑器允许）
@@ -132,26 +172,32 @@ async function finalizeImport(page: Page) {
       const el = document.querySelector(selector);
       return !!el && el.childElementCount > 0;
     }, { timeout: 8000 }, ZHIHU.CONTENT_SELECTOR);
+    log('Content area has children, import likely completed');
   } catch {
     // 内容检测失败继续尝试关闭
+    log('Content detection failed within timeout, proceeding to close modal anyway');
   }
   // 查找关闭按钮（可能是模态右上角或“完成”按钮文字）
   const closeBtn = await page.$('.Modal-inner button[aria-label="关闭"], .Modal-closeButton, button[aria-label=关闭]');
   if (closeBtn) {
     await closeBtn.click();
     await delay(page, 300);
+    log('Clicked explicit close button');
     return;
   }
   // 尝试点击“完成”或“确认”文本按钮
   await clickByText(page, '完成');
   await delay(page, 300);
+  log('Clicked 完成 button (if existed)');
   await clickByText(page, '确认');
   await delay(page, 300);
+  log('Clicked 确认 button (if existed)');
   // 若仍存在模态，可发送 ESC
   const modalStill = await page.$('.Modal-inner');
   if (modalStill) {
     await page.keyboard.press('Escape');
     await delay(page, 300);
+    log('Sent Escape to close remaining modal');
   }
 }
 

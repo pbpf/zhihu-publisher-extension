@@ -13,6 +13,13 @@
 2. 构建：`npm run compile`
 3. 在 VS Code 命令面板执行：`发布当前 Markdown 到知乎`
 
+### 扩展激活说明
+扩展设置了 `activationEvents: onCommand:zhihu.publishMarkdown`，只有在命令面板搜索该命令或被其它扩展调用时才会激活。如果安装后找不到命令：
+- 确认扩展已启用且未被禁用
+- 在命令面板输入关键字 “知乎” 或 “publishMarkdown”
+- 查看“开发者工具” Console 是否有加载错误（如 Puppeteer 缺失）
+- 使用 VS Code 菜单：帮助 -> 切换开发者工具，输入 `require("vscode").extensions.getExtension("your-name.zhihu-publisher-extension")?.isActive` 检查是否激活
+
 ## 调试开发
 本仓库已包含 `.vscode/launch.json` 与 `tasks.json`：
 
@@ -36,6 +43,19 @@
 | 登录一直等待 | 看是否跳转到二维码页面，超时后重试；确保网络可访问微信登录。 |
 | 断点不命中 | 确认 watch 正在运行；查看 `dist/*.js.map` 是否生成。重新启动调试实例可恢复。 |
 | 上传失败提示未找到 input | 可能知乎前端结构更新，更新选择器逻辑 `publisher.ts`。 |
+| 命令显示但执行报 not found | 扩展激活失败，检查开发者工具 Console 是否有依赖缺失错误。 |
+| 加载 puppeteer 失败缺 cosmiconfig | `.vscodeignore` 过度排除，保留完整 `node_modules` 或仅移除 docs/test。 |
+
+### 打包注意事项
+Puppeteer 依赖链包含 `puppeteer-core`, `@puppeteer/browsers`, `chromium-bidi`, `cosmiconfig` 等。如果在 `.vscodeignore` 中排除整个 `node_modules` 再做选择性白名单，很容易漏掉深层依赖导致运行期报错。推荐初期做法：
+
+1. 保留完整 `node_modules` 仅排除 `**/test`, `**/docs` 等。
+2. 确认命令执行正常后再考虑：
+	- 改用 `puppeteer-core` + 系统浏览器：减少 VSIX 体积。
+	- 使用打包工具（esbuild/webpack）内联业务代码并 external `puppeteer`。
+3. 遇到 `Cannot find package 'cosmiconfig'` 等错误：撤销对 `node_modules` 的大范围排除，重新打包验证。
+
+懒加载策略：扩展激活时不加载 puppeteer，命令执行时动态 `import('puppeteer')`，降低激活失败风险。
 
 ## 注意
 - Puppeteer 默认非 headless，方便扫码与观察流程

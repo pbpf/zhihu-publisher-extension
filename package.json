@@ -2,7 +2,7 @@
   "name": "zhihu-publisher-extension",
   "displayName": "Zhihu Publisher",
   "description": "只包含知乎专栏一键发布 Markdown 的 VS Code 扩展",
-  "version": "0.0.1",
+  "version": "0.1.2",
   "publisher": "your-name",
   "engines": {
     "vscode": "^1.85.0"
@@ -16,8 +16,25 @@
     "url": "https://github.com/your-name/zhihu-publisher-extension.git"
   },
   "license": "MIT",
-  "activationEvents": [
-    "onCommand:zhihu.publishMarkdown"
+  "files": [
+    "LICENSE",
+    "dist",
+    "node_modules/puppeteer",
+    "node_modules/@puppeteer/browsers",
+    "node_modules/chromium-bidi",
+    "node_modules/cosmiconfig",
+    "node_modules/puppeteer-core",
+    "node_modules/typed-query-selector",
+    "node_modules/semver",
+    "node_modules/proxy-agent",
+    "node_modules/lru-cache",
+    "node_modules/debug",
+    "node_modules/agent-base",
+    "node_modules/ms",
+    "node_modules/proxy-from-env",
+    "node_modules/progress",
+    "node_modules/ws",
+    "node_modules/env-paths"
   ],
   "scripts": {
     "compile": "tsc -p .",
@@ -35,14 +52,14 @@
       }
     ]
   },
-  "dependencies": {
-    "puppeteer": "^24.15.0"
-  },
   "devDependencies": {
     "@types/node": "^20.10.0",
     "@types/vscode": "^1.85.0",
     "@vscode/vsce": "^3.6.2",
     "esbuild": "^0.25.11",
     "typescript": "^5.4.0"
+  },
+  "dependencies": {
+    "puppeteer": "^24.27.0"
   }
 }

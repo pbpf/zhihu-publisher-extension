@@ -1,8 +1,6 @@
 import * as vscode from 'vscode';
-// @ts-ignore - puppeteer types may not be installed; treat as any if missing
-// 延迟加载 puppeteer，避免扩展激活阶段因为缺少依赖或体积过大导致命令注册失败
-// 类型用 any 降低耦合；执行时动态 import
-import type { Page } from 'puppeteer';
+// @ts-ignore - puppeteer types可能未安装，直接静态导入
+import puppeteer, { Page } from 'puppeteer';
 // TextEncoder fallback：Node18+ 已内置；若不存在则使用 Buffer 转换替代
 const encodeUtf8 = (content: string): Uint8Array => {
   if (typeof TextEncoder !== 'undefined') {
@@ -46,7 +44,6 @@ export async function publishToZhihu(context: vscode.ExtensionContext) {
 
   vscode.window.showInformationMessage('启动浏览器准备发布知乎文章...'); // 关键提示仍使用通知
   log('Launching Puppeteer browser');
-  const puppeteer = await lazyLoadPuppeteer();
   const browser = await puppeteer.launch({ headless: false });
   const page = await browser.newPage();
   await page.goto(ZHIHU.ENTRY, { waitUntil: ['domcontentloaded', 'load', 'networkidle0'] });
@@ -99,22 +96,7 @@ async function ensureLogin(page: Page): Promise<boolean> {
   }
 }
 
-async function lazyLoadPuppeteer() {
-  try {
-    // 优先尝试正常依赖
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const mod = await import('puppeteer');
-    return (mod as any).default || mod;
-  } catch (e) {
-    const msg = '加载 puppeteer 失败: ' + (e as any)?.message + '。可能原因：\n' +
-      '- .vscodeignore 过滤了 puppeteer 依赖（如 cosmiconfig）\n' +
-      '- 未执行 npm install 或安装不完整\n' +
-      '- VSIX 打包后缺少依赖，需保留完整 node_modules 或使用打包工具内联\n' +
-      '解决：暂时保留全部 node_modules，确认命令可用后再做瘦身。';
-    vscode.window.showErrorMessage(msg);
-    throw e;
-  }
-}
+// 已改为静态导入 puppeteer，无需 lazyLoadPuppeteer
 
 async function openImportModal(page: Page) {
   // 新 UI：点击 “导入” -> “导入文档”

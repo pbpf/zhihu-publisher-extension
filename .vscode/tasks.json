@@ -23,7 +23,7 @@
     }
     ,
     {
-      "label": "publish: vsce (choose bump)",
+      "label": "publish",
       "type": "shell",
       "command": "./node_modules/.bin/vsce publish major",
       "problemMatcher": [],

@@ -21,5 +21,19 @@
       },
       "presentation": {"reveal": "never"}
     }
-  ]
+    ,
+    {
+      "label": "publish: vsce (choose bump)",
+      "type": "shell",
+      "command": "./node_modules/.bin/vsce publish major",
+      "problemMatcher": [],
+      "presentation": {"reveal": "always"},
+      "options": {
+        "env": {
+          "VSCE_PAT": "${env:VSCE_PAT}",
+          "PATH": "/opt/node/bin:${env:PATH}"
+        }
+      }
+    }
+  ],
 }

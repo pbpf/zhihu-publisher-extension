@@ -163,6 +163,7 @@ export async function publishToZhihu(context: vscode.ExtensionContext) {
     await fillTitle(page, title);
     updateStatus('done');
     log('Import flow finished (current mode: ' + (isHeadless ? 'visible' : 'headless?') + ')');
+    await delay(page, 3000);
     const editorUrl = page.url();
     log('Url: ' + editorUrl);
     showEditorLinkMessage(editorUrl, isHeadless)

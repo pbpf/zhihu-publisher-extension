@@ -4,6 +4,7 @@ import puppeteer, { Page, Browser } from 'puppeteer';
 // 全局持有当前浏览器实例，进入新的发布流程前关闭旧实例
 let activeBrowser: Browser | undefined;
 import { updateStatus } from '../status';
+import uploadLocalImage from './upload';
 // TextEncoder fallback：Node18+ 已内置；若不存在则使用 Buffer 转换替代
 const encodeUtf8 = (content: string): Uint8Array => {
   if (typeof TextEncoder !== 'undefined') {
@@ -66,7 +67,7 @@ export async function publishToZhihu(context: vscode.ExtensionContext) {
     '--disable-setuid-sandbox',
     '--disable-dev-shm-usage'
   ];
-  let isHeadless = true;
+  let isHeadless = false;
   let browser = await puppeteer.launch({ headless: isHeadless, userDataDir: profileDir, args: launchArgs });
   activeBrowser = browser;
   let page = await browser.newPage();
@@ -104,7 +105,7 @@ export async function publishToZhihu(context: vscode.ExtensionContext) {
     try {
       log('Login succeeded in visible mode, switching back to headless for import flow');
       try { await browser.close(); } catch { }
-      isHeadless = true;
+      isHeadless = false;
       browser = await puppeteer.launch({ headless: isHeadless, userDataDir: profileDir, args: launchArgs });
       activeBrowser = browser;
       page = await browser.newPage();
@@ -139,7 +140,7 @@ export async function publishToZhihu(context: vscode.ExtensionContext) {
       try {
         log('Risk verification passed in visible mode, switching back to headless');
         try { await browser.close(); } catch { }
-        isHeadless = true;
+        isHeadless = false;
         browser = await puppeteer.launch({ headless: isHeadless, userDataDir: profileDir, args: launchArgs });
         activeBrowser = browser;
         page = await browser.newPage();
@@ -161,10 +162,54 @@ export async function publishToZhihu(context: vscode.ExtensionContext) {
     await uploadMarkdownFile(page, tempUri.fsPath);
     log('File uploaded, filling title');
     await fillTitle(page, title);
+    // 尝试上传 Markdown 中本地图片并替换（仅处理形如 ![alt](./path) 的本地路径）
+    try {
+      const mdText = raw;
+      const imgRegex = /!\[[^\]]*\]\((?!https?:)([^)]+)\)/g;
+      const matches: string[] = [];
+      let m: RegExpExecArray | null;
+      while ((m = imgRegex.exec(mdText)) !== null) {
+        matches.push(m[1]);
+      }
+      for (const relPath of matches) {
+        try {
+          const localFull = require('path').resolve(require('path').dirname(editor.document.fileName), relPath);
+          updateStatus('importing');
+          log('Uploading local image: ' + localFull);
+          const remote = await uploadLocalImage(page, localFull);
+          log('Image uploaded: ' + remote);
+          // 在编辑器页面中替换第一次出现的本地链接为远端链接
+          await page.evaluate((local, remoteUrl) => {
+            const els = Array.from(document.querySelectorAll('img')) as HTMLImageElement[];
+            for (const img of els) {
+              if (img.src.includes(local) || img.getAttribute('src') === local) {
+                img.src = remoteUrl;
+                img.setAttribute('data-zhihu-published', '1');
+                break;
+              }
+            }
+            // 如果编辑器以 Markdown 文本存在，尝试替换文本节点（兜底）
+            const textareas = Array.from(document.querySelectorAll('textarea')) as HTMLTextAreaElement[];
+            if (textareas.length) {
+              for (const ta of textareas) {
+                if (ta.value.includes(local)) {
+                  ta.value = ta.value.replace(local, remoteUrl);
+                  break;
+                }
+              }
+            }
+          }, relPath, remote);
+        } catch (e: any) {
+          log('Upload local image failed for ' + relPath + ': ' + (e?.message || e));
+        }
+      }
+    } catch (e: any) {
+      log('Local image upload integration failed: ' + (e?.message || e));
+    }
     updateStatus('done');
     log('Import flow finished (current mode: ' + (isHeadless ? 'visible' : 'headless?') + ')');
     await delay(page, 3000);
-    const editorUrl = page.url();
+    const editorUrl = await page.evaluate(() => location.href);
     log('Url: ' + editorUrl);
     showEditorLinkMessage(editorUrl, isHeadless)
   } catch (e: any) {

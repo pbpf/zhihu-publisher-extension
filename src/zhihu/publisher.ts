@@ -79,18 +79,18 @@ export async function publishToZhihu(context: vscode.ExtensionContext) {
     // 需要登录：切换到可视模式
     log('Not logged in (headless). Restarting visible browser for login.');
     try { await browser.close(); } catch { }
-  // vscode.window.showInformationMessage('需要扫码登录，正在打开浏览器窗口...');
-  updateStatus('loggingIn');
-  isHeadless = false;
-  browser = await puppeteer.launch({ headless: isHeadless, userDataDir: profileDir, args: launchArgs });
-  activeBrowser = browser;
+    // vscode.window.showInformationMessage('需要扫码登录，正在打开浏览器窗口...');
+    updateStatus('loggingIn');
+    isHeadless = false;
+    browser = await puppeteer.launch({ headless: isHeadless, userDataDir: profileDir, args: launchArgs });
+    activeBrowser = browser;
     page = await browser.newPage();
     await applyUserAgent(page);
     await page.goto(ZHIHU.ENTRY, { waitUntil: ['domcontentloaded', 'load', 'networkidle0'] });
     loggedIn = await ensureLogin(page);
     if (!loggedIn) {
-  vscode.window.showErrorMessage('登录失败或超时，已清理缓存，下次将重新登录');
-  updateStatus('error');
+      vscode.window.showErrorMessage('登录失败或超时，已清理缓存，下次将重新登录');
+      updateStatus('error');
       try { await browser.close(); } catch { }
       try {
         await vscode.workspace.fs.delete(vscode.Uri.file(profileDir), { recursive: true, useTrash: false });
@@ -103,10 +103,10 @@ export async function publishToZhihu(context: vscode.ExtensionContext) {
     // 登录成功后切回 headless 减少打扰
     try {
       log('Login succeeded in visible mode, switching back to headless for import flow');
-      try { await browser.close(); } catch {}
-  isHeadless = true;
-  browser = await puppeteer.launch({ headless: isHeadless, userDataDir: profileDir, args: launchArgs });
-  activeBrowser = browser;
+      try { await browser.close(); } catch { }
+      isHeadless = true;
+      browser = await puppeteer.launch({ headless: isHeadless, userDataDir: profileDir, args: launchArgs });
+      activeBrowser = browser;
       page = await browser.newPage();
       await applyUserAgent(page);
       await page.goto(ZHIHU.ENTRY, { waitUntil: ['domcontentloaded', 'load', 'networkidle0'] });
@@ -118,19 +118,19 @@ export async function publishToZhihu(context: vscode.ExtensionContext) {
     log('Detected existing logged-in session (headless)');
     // 额外检查风控（如风险验证）
     if (await detectRiskVerification(page)) {
-  log('Risk verification detected in headless mode; switching to visible');
-  updateStatus('risk');
+      log('Risk verification detected in headless mode; switching to visible');
+      updateStatus('risk');
       try { await browser.close(); } catch { }
-  isHeadless = false;
-  browser = await puppeteer.launch({ headless: isHeadless, userDataDir: profileDir, args: launchArgs });
-  activeBrowser = browser;
+      isHeadless = false;
+      browser = await puppeteer.launch({ headless: isHeadless, userDataDir: profileDir, args: launchArgs });
+      activeBrowser = browser;
       page = await browser.newPage();
       await applyUserAgent(page);
       await page.goto(ZHIHU.ENTRY, { waitUntil: ['domcontentloaded', 'load', 'networkidle0'] });
       const ensured = await ensureLogin(page);
       if (!ensured) {
-  vscode.window.showErrorMessage('风控验证未通过');
-  updateStatus('error');
+        vscode.window.showErrorMessage('风控验证未通过');
+        updateStatus('error');
         try { await browser.close(); } catch { }
         return;
       }
@@ -138,10 +138,10 @@ export async function publishToZhihu(context: vscode.ExtensionContext) {
       // 风控验证通过后同样切回 headless
       try {
         log('Risk verification passed in visible mode, switching back to headless');
-        try { await browser.close(); } catch {}
-  isHeadless = true;
-  browser = await puppeteer.launch({ headless: isHeadless, userDataDir: profileDir, args: launchArgs });
-  activeBrowser = browser;
+        try { await browser.close(); } catch { }
+        isHeadless = true;
+        browser = await puppeteer.launch({ headless: isHeadless, userDataDir: profileDir, args: launchArgs });
+        activeBrowser = browser;
         page = await browser.newPage();
         await applyUserAgent(page);
         await page.goto(ZHIHU.ENTRY, { waitUntil: ['domcontentloaded', 'load', 'networkidle0'] });
@@ -155,20 +155,20 @@ export async function publishToZhihu(context: vscode.ExtensionContext) {
   try {
     await page.goto(ZHIHU.EDITOR, { waitUntil: ['domcontentloaded', 'load', 'networkidle0'] });
     log('Entered editor page');
-  updateStatus('importing');
-  await openImportModal(page);
+    updateStatus('importing');
+    await openImportModal(page);
     log('Import modal opened');
     await uploadMarkdownFile(page, tempUri.fsPath);
     log('File uploaded, filling title');
-  await fillTitle(page, title);
-  updateStatus('done');
-    log('Import flow finished (current mode: ' + (isHeadless? 'visible' : 'headless?') + ')');
+    await fillTitle(page, title);
+    updateStatus('done');
+    log('Import flow finished (current mode: ' + (isHeadless ? 'visible' : 'headless?') + ')');
     const editorUrl = page.url();
-    log('Url: '+editorUrl);
+    log('Url: ' + editorUrl);
     showEditorLinkMessage(editorUrl, isHeadless)
   } catch (e: any) {
-  vscode.window.showErrorMessage('导入流程失败: ' + (e?.message || e));
-  updateStatus('error');
+    vscode.window.showErrorMessage('导入流程失败: ' + (e?.message || e));
+    updateStatus('error');
     log('Error in import flow: ' + (e?.stack || e));
     try { await browser.close(); } catch { }
     return;
@@ -406,8 +406,8 @@ async function showEditorLinkMessage(url: string, headless: boolean) {
       await vscode.env.openExternal(vscode.Uri.parse(url));
       log('已在系统默认浏览器中打开知乎编辑页面');
     } catch (e: any) {
-      await vscode.env.clipboard.writeText(url); 
-      log('打开系统浏览器失败,已复制知乎编辑链接'); 
+      await vscode.env.clipboard.writeText(url);
+      log('打开系统浏览器失败,已复制知乎编辑链接');
     }
   }
 }

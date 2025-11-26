@@ -2,7 +2,7 @@
   "name": "zhihu-publisher-extension",
   "displayName": "Zhihu Publisher",
   "description": "知乎一键发布 Markdown 的 VS Code 扩展",
-  "version": "1.0.2",
+  "version": "2.0.0",
   "publisher": "connor",
   "engines": {
     "vscode": "^1.85.0"

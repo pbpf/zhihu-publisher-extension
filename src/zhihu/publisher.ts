@@ -5,6 +5,7 @@ import puppeteer, { Page, Browser } from 'puppeteer';
 let activeBrowser: Browser | undefined;
 import { updateStatus } from '../status';
 import uploadLocalImage from './upload';
+import * as path from 'path';
 // TextEncoder fallback：Node18+ 已内置；若不存在则使用 Buffer 转换替代
 const encodeUtf8 = (content: string): Uint8Array => {
   if (typeof TextEncoder !== 'undefined') {
@@ -56,6 +57,7 @@ export async function publishToZhihu(context: vscode.ExtensionContext) {
 
   const tempUri = vscode.Uri.file(context.globalStorageUri.fsPath + '/temp.md');
   await vscode.workspace.fs.writeFile(tempUri, encodeUtf8(raw));
+  log("write "+tempUri)
 
   // vscode.window.showInformationMessage('后台启动浏览器准备发布知乎文章...');
   updateStatus('launching');
@@ -157,55 +159,69 @@ export async function publishToZhihu(context: vscode.ExtensionContext) {
     await page.goto(ZHIHU.EDITOR, { waitUntil: ['domcontentloaded', 'load', 'networkidle0'] });
     log('Entered editor page');
     updateStatus('importing');
+    // 先扫描并上传本地图片，替换临时文件中的本地路径为远端 URL
+    try {
+      let modified = raw;
+      const imgRegex = /!\[[^\]]*\]\((?!https?:)([^)]+)\)/g;
+      let m: RegExpExecArray | null;
+      const rels: string[] = [];
+      while ((m = imgRegex.exec(raw)) !== null) rels.push(m[1]);
+      for (const rel of rels) {
+        try {
+          const localFull = path.resolve(path.dirname(editor.document.fileName), rel);
+          log('Uploading local image: ' + localFull);
+          const remote = await uploadLocalImage(page, localFull);
+          log('Image uploaded: ' + remote);
+            // 仅替换 Markdown 图片语法中的 URL：!
+            // 构造安全的正则，匹配像 `![alt](  rel  )` 并替换括号内的 rel 为 remote
+            const escapeForRegex = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+            const relEsc = escapeForRegex(rel);
+            const mdImgUrlRegex = new RegExp("(!\\[[^\\]]*\\]\\(\\s*)" + relEsc + "(\\s*\\))", 'g');
+            modified = modified.replace(mdImgUrlRegex, (match: string, p1: string, p2: string) => {
+              return p1 + remote + p2;
+            });
+        } catch (e: any) {
+          log('Upload local image failed for ' + rel + ': ' + (e?.message || e));
+        }
+      }
+      // 覆写临时文件为替换后的内容
+      await vscode.workspace.fs.writeFile(tempUri, encodeUtf8(modified));
+    } catch (e: any) {
+      log('Local image pre-upload failed: ' + (e?.message || e));
+    }
+
+    // 清空页面编辑器内容，避免导入时把图片插入到顶部导致重复
+    try {
+      await page.evaluate((sel: string) => {
+        const el = document.querySelector(sel) as HTMLElement | null;
+        if (el) {
+          el.innerHTML = '';
+          // 触发输入事件以通知编辑器状态变化（部分富文本依赖事件）
+          try { el.dispatchEvent(new Event('input', { bubbles: true })); } catch {}
+        } else {
+          // 回退：清空任何 textarea
+          const ta = document.querySelector('textarea') as HTMLTextAreaElement | null;
+          if (ta) ta.value = '';
+        }
+      }, ZHIHU.CONTENT_SELECTOR);
+      await delay(page, 300);
+    } catch (e: any) {
+      log('Clear editor content failed: ' + (e?.message || e));
+    }
+
+    // 在打开导入模态前自动删除编辑器中所有 <figure> 节点（防止重复图片）
+    // try {
+    //   const removed = await removeFigureNodes(page);
+    //   log('Removed <figure> count: ' + removed);
+    // } catch (e: any) {
+    //   log('removeFigureNodes failed: ' + (e?.message || e));
+    // }
+
     await openImportModal(page);
     log('Import modal opened');
     await uploadMarkdownFile(page, tempUri.fsPath);
     log('File uploaded, filling title');
     await fillTitle(page, title);
-    // 尝试上传 Markdown 中本地图片并替换（仅处理形如 ![alt](./path) 的本地路径）
-    try {
-      const mdText = raw;
-      const imgRegex = /!\[[^\]]*\]\((?!https?:)([^)]+)\)/g;
-      const matches: string[] = [];
-      let m: RegExpExecArray | null;
-      while ((m = imgRegex.exec(mdText)) !== null) {
-        matches.push(m[1]);
-      }
-      for (const relPath of matches) {
-        try {
-          const localFull = require('path').resolve(require('path').dirname(editor.document.fileName), relPath);
-          updateStatus('importing');
-          log('Uploading local image: ' + localFull);
-          const remote = await uploadLocalImage(page, localFull);
-          log('Image uploaded: ' + remote);
-          // 在编辑器页面中替换第一次出现的本地链接为远端链接
-          await page.evaluate((local, remoteUrl) => {
-            const els = Array.from(document.querySelectorAll('img')) as HTMLImageElement[];
-            for (const img of els) {
-              if (img.src.includes(local) || img.getAttribute('src') === local) {
-                img.src = remoteUrl;
-                img.setAttribute('data-zhihu-published', '1');
-                break;
-              }
-            }
-            // 如果编辑器以 Markdown 文本存在，尝试替换文本节点（兜底）
-            const textareas = Array.from(document.querySelectorAll('textarea')) as HTMLTextAreaElement[];
-            if (textareas.length) {
-              for (const ta of textareas) {
-                if (ta.value.includes(local)) {
-                  ta.value = ta.value.replace(local, remoteUrl);
-                  break;
-                }
-              }
-            }
-          }, relPath, remote);
-        } catch (e: any) {
-          log('Upload local image failed for ' + relPath + ': ' + (e?.message || e));
-        }
-      }
-    } catch (e: any) {
-      log('Local image upload integration failed: ' + (e?.message || e));
-    }
     updateStatus('done');
     log('Import flow finished (current mode: ' + (isHeadless ? 'visible' : 'headless?') + ')');
     await delay(page, 3000);
@@ -477,5 +493,35 @@ async function applyUserAgent(page: Page) {
     if (page.setUserAgent) await (page as any).setUserAgent(ua);
   } catch (e: any) {
     log('Fallback setUserAgent failed: ' + (e?.message || e));
+  }
+}
+
+// 删除编辑区内所有 <figure> 节点：优先模拟选中并发送 Delete 键，失败时直接从 DOM 删除并触发 input 事件
+async function removeFigureNodes(page: Page) {
+  try {
+    const diag = await page.evaluate((sel) => {
+      const out: any = { found: false, beforeCount: 0, removedCount: 0, sampleSrcs: [] };
+      const container = document.querySelector(sel);
+      if (!container) return out;
+      out.found = true;
+      const figs = Array.from(container.querySelectorAll('figure'));
+      out.beforeCount = figs.length;
+      for (const f of figs) {
+        const img = f.querySelector('img') as HTMLImageElement | null;
+        if (img && out.sampleSrcs.length < 10) out.sampleSrcs.push(img.src || img.getAttribute('src'));
+        f.remove();
+        out.removedCount += 1;
+      }
+      try { container.dispatchEvent(new Event('input', { bubbles: true })); } catch {}
+      try { container.dispatchEvent(new Event('compositionend', { bubbles: true })); } catch {}
+      return out;
+    }, ZHIHU.CONTENT_SELECTOR);
+    await delay(page, 80);
+    log('removeFigureNodes completed (bulk remove)');
+    log('removeFigureNodes diag: ' + JSON.stringify(diag));
+    return diag.removedCount || 0;
+  } catch (e: any) {
+    log('removeFigureNodes error: ' + (e?.message || e));
+    return 0;
   }
 }

@@ -69,7 +69,7 @@ export async function publishToZhihu(context: vscode.ExtensionContext) {
     '--disable-setuid-sandbox',
     '--disable-dev-shm-usage'
   ];
-  let isHeadless = false;
+  let isHeadless = true;
   let browser = await puppeteer.launch({ headless: isHeadless, userDataDir: profileDir, args: launchArgs });
   activeBrowser = browser;
   let page = await browser.newPage();
@@ -107,7 +107,7 @@ export async function publishToZhihu(context: vscode.ExtensionContext) {
     try {
       log('Login succeeded in visible mode, switching back to headless for import flow');
       try { await browser.close(); } catch { }
-      isHeadless = false;
+      isHeadless = true;
       browser = await puppeteer.launch({ headless: isHeadless, userDataDir: profileDir, args: launchArgs });
       activeBrowser = browser;
       page = await browser.newPage();
@@ -142,7 +142,7 @@ export async function publishToZhihu(context: vscode.ExtensionContext) {
       try {
         log('Risk verification passed in visible mode, switching back to headless');
         try { await browser.close(); } catch { }
-        isHeadless = false;
+        isHeadless = true;
         browser = await puppeteer.launch({ headless: isHeadless, userDataDir: profileDir, args: launchArgs });
         activeBrowser = browser;
         page = await browser.newPage();
